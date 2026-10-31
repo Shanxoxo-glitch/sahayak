@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, DateTime, ForeignKey
 from app.database import Base

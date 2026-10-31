@@ -9,7 +9,6 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 

@@ -27,7 +27,7 @@ jobs:
 
       - name: Run Backend Tests
         env:
-          PYTHONPATH: .
+          PYTHONPATH: services/backend:.
         run: |
           cd services/backend
           python -m pytest tests/ -v
@@ -67,7 +67,7 @@ jobs:
 
       - name: Run Scoring Contract Tests
         env:
-          PYTHONPATH: .
+          PYTHONPATH: services/scoring:.
           SCORING_WARM_ON_START: "0"
         run: |
           cd services/scoring
@@ -75,7 +75,7 @@ jobs:
 
       - name: Verify scoring API imports without torch
         env:
-          PYTHONPATH: .
+          PYTHONPATH: services/scoring:.
           SCORING_WARM_ON_START: "0"
         run: |
           cd services/scoring
