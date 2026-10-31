@@ -30,7 +30,13 @@ jobs:
           PYTHONPATH: services/backend:.
         run: |
           cd services/backend
-          python -m pytest tests/ -v
+          python -m pytest tests/ -v 2>&1 | tee /tmp/backend_test.log || {
+            echo "### Pytest Failure Log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat /tmp/backend_test.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          }
 
   test-orchestrator:
     name: Orchestrator Service CI
