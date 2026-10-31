@@ -1,9 +1,7 @@
 import { useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { saveCheckIn, recordVictimQuestionnaire } from "@/lib/store";
-import { ArrowLeft, ArrowRight, Check, Heart, Moon, Wind, Sparkles, Phone, Camera } from "lucide-react";
-import { KeypadCheckInModal } from "@/components/checkin/KeypadCheckInModal";
-import { CameraCheckInModal } from "@/components/checkin/CameraCheckInModal";
+import { ArrowLeft, ArrowRight, Check, Heart, Moon, Wind, Sparkles } from "lucide-react";
 
 export const Route = createFileRoute("/checkin")({
   head: () => ({
@@ -42,8 +40,6 @@ const SLEEP_QUALITIES = ["Restless", "Broken", "Adequate", "Restful", "Deep"];
 export default function CheckInPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
-  const [showKeypadModal, setShowKeypadModal] = useState(false);
-  const [showCameraModal, setShowCameraModal] = useState(false);
   const [mood, setMood] = useState<1 | 2 | 3 | 4 | 5>(3);
   const [sleepHours, setSleepHours] = useState(6.5);
   const [sleepQuality, setSleepQuality] = useState("Adequate");
@@ -109,67 +105,6 @@ export default function CheckInPage() {
         {/* Step 1: Mood */}
         {step === 1 && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
-            {/* Alternative Check-in Banners: Voice Keypad & OpenCV Camera */}
-            <div className="space-y-3">
-              {/* Voice Keypad Banner */}
-              <div className="p-4 rounded-2xl border border-clay/30 bg-clay/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-clay/10 text-clay shrink-0">
-                    <Phone className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-widest text-clay flex items-center gap-1.5">
-                      <span>Alternative Voice Assessment</span>
-                      <span className="px-1.5 py-0.5 rounded-full bg-clay/20 text-[9px] font-mono">IVRS :8100</span>
-                    </div>
-                    <div className="text-sm font-display font-semibold text-foreground">
-                      Dial 3-Char Keypad Code For Voice Check-in
-                    </div>
-                    <div className="text-[11px] text-foreground/60 leading-tight">
-                      Continuous acoustic perception scoring via your secret sequence (voice used)
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowKeypadModal(true)}
-                  className="w-full sm:w-auto shrink-0 px-4 py-2 rounded-full bg-forest text-forest-foreground text-xs font-semibold hover:bg-clay shadow-sm transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <Phone className="h-3.5 w-3.5" />
-                  <span>Open Keypad</span>
-                </button>
-              </div>
-
-              {/* OpenCV Live Camera Emotion Banner */}
-              <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-600 shrink-0">
-                    <Camera className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-widest text-amber-600 flex items-center gap-1.5">
-                      <span>Facial Emotion Perception</span>
-                      <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-[9px] font-mono">OpenCV FER+</span>
-                    </div>
-                    <div className="text-sm font-display font-semibold text-foreground">
-                      Live Camera Emotion Check-in
-                    </div>
-                    <div className="text-[11px] text-foreground/60 leading-tight">
-                      Computes session arithmetic average of distress & primary emotion (camera used)
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowCameraModal(true)}
-                  className="w-full sm:w-auto shrink-0 px-4 py-2 rounded-full bg-amber-500 text-white text-xs font-semibold hover:bg-amber-600 shadow-sm transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <Camera className="h-3.5 w-3.5" />
-                  <span>Open Camera</span>
-                </button>
-              </div>
-            </div>
-
             <div className="space-y-3">
               <span className="text-xs font-medium uppercase tracking-[0.25em] text-sage-deep">
                 Question 01
@@ -470,26 +405,6 @@ export default function CheckInPage() {
       <div className="mx-auto w-full max-w-xl text-center text-xs text-foreground/40 font-light z-10">
         Private & Anonymous · No numbers, no scores, no judgment
       </div>
-
-      {/* Interactive Keypad Check-in Modal */}
-      <KeypadCheckInModal
-        isOpen={showKeypadModal}
-        onClose={() => setShowKeypadModal(false)}
-        onSuccess={() => {
-          setShowKeypadModal(false);
-          setStep(5);
-        }}
-      />
-
-      {/* Interactive OpenCV Live Camera Emotion Check-in Modal */}
-      <CameraCheckInModal
-        isOpen={showCameraModal}
-        onClose={() => setShowCameraModal(false)}
-        onSuccess={() => {
-          setShowCameraModal(false);
-          setStep(5);
-        }}
-      />
     </div>
   );
 }

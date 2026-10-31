@@ -4,6 +4,9 @@ import {
   getCheckIns,
   getAlerts,
   getCases,
+  getRegisteredVictims,
+  RegisteredVictimRecord,
+  syncBackendVictimsToLocalStorage,
   updateCaseStatus,
   subscribeToStore,
   CounsellorCase,
@@ -12,6 +15,7 @@ import {
   getCurrentUser,
   logoutUser,
 } from "@/lib/store";
+import { BASE } from "@/lib/api";
 import {
   AreaChart,
   Area,
@@ -81,7 +85,24 @@ export default function AdminObservatoryPage() {
   const [cases, setCases] = useState<CounsellorCase[]>([]);
   const [alerts, setAlerts] = useState<TriageAlert[]>([]);
   const [checkins, setCheckins] = useState<CheckInEntry[]>([]);
+  const [registeredVictims, setRegisteredVictims] = useState<RegisteredVictimRecord[]>([]);
+  const [activeViewTab, setActiveViewTab] = useState<"caseload" | "victims">("victims");
   const [lastUpdatedTime, setLastUpdatedTime] = useState(new Date().toLocaleTimeString("en-IN"));
+
+  // Fetch backend DB victims and persist to localStorage (survives heartbeat resets)
+  const fetchBackendVictims = async () => {
+    try {
+      const res = await fetch(`${BASE}/api/v1/auth/victims`);
+      if (res.ok) {
+        const backendVictims: RegisteredVictimRecord[] = await res.json();
+        // Write into localStorage so getCases() / getRegisteredVictims() pick them up
+        // on every heartbeat tick — avoids the 3s reset problem
+        syncBackendVictimsToLocalStorage(backendVictims);
+      }
+    } catch {
+      // Backend unavailable — localStorage-only mode
+    }
+  };
 
   // Real-time synchronization with store
   useEffect(() => {
@@ -90,10 +111,13 @@ export default function AdminObservatoryPage() {
       setCases(getCases());
       setAlerts(getAlerts());
       setCheckins(getCheckIns());
+      const localVictims = getRegisteredVictims();
+      setRegisteredVictims(localVictims);
       setLastUpdatedTime(new Date().toLocaleTimeString("en-IN"));
     };
 
     refreshData();
+    fetchBackendVictims();
     const unsubscribe = subscribeToStore(refreshData);
 
     // Heartbeat every 3s to keep relative times fresh
@@ -101,9 +125,15 @@ export default function AdminObservatoryPage() {
       refreshData();
     }, 3000);
 
+    // Refresh backend victims every 15s
+    const backendTimer = setInterval(() => {
+      fetchBackendVictims();
+    }, 15000);
+
     return () => {
       unsubscribe();
       clearInterval(timer);
+      clearInterval(backendTimer);
     };
   }, []);
 
@@ -433,19 +463,60 @@ export default function AdminObservatoryPage() {
 
         {/* SHOWPIECE: Real-time Victim Case Stream & Resolution Monitor */}
         <div className="rounded-3xl border border-foreground/15 bg-card p-6 md:p-8 space-y-5 shadow-[var(--shadow-soft)]">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-foreground/10 pb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-foreground/10 pb-4">
             <div>
               <span className="text-[10px] font-medium uppercase tracking-widest text-clay flex items-center gap-1.5">
-                <Radio className="h-3.5 w-3.5 text-clay animate-pulse" /> Live Caseload Feed
+                <Radio className="h-3.5 w-3.5 text-clay animate-pulse" /> Observatory Intake & Caseload Monitor
               </span>
               <h2 className="font-display text-2xl text-foreground">
-                Victim Intake & Counsellor Resolution Stream
+                {activeViewTab === "victims" ? "Registered Victims & Gathered Intelligence" : "Victim Intake & Counsellor Resolution Stream"}
               </h2>
               <p className="text-xs text-foreground/60">
-                Incoming messages from victims evaluated by AI and resolved in real time.
+                {activeViewTab === "victims" 
+                  ? "Audit of all individuals signing up as victims across Traditional, Voice Keypad, and OpenCV Camera channels."
+                  : "Incoming messages from victims evaluated by AI and resolved in real time."}
               </p>
             </div>
-            <div className="flex items-center gap-2 self-start sm:self-auto">
+
+            <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto">
+              {/* Tab Selector between Caseload Feed and Registered Victims */}
+              <div className="flex items-center p-1 bg-background/90 rounded-2xl border border-foreground/10 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setActiveViewTab("victims")}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    activeViewTab === "victims"
+                      ? "bg-clay text-white shadow-sm"
+                      : "text-foreground/70 hover:text-foreground hover:bg-foreground/5"
+                  }`}
+                >
+                  <Users className="h-3.5 w-3.5" />
+                  <span>Registered Victims</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    activeViewTab === "victims" ? "bg-white/25 text-white" : "bg-clay/15 text-clay"
+                  }`}>
+                    {registeredVictims.length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveViewTab("caseload")}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    activeViewTab === "caseload"
+                      ? "bg-forest text-white shadow-sm"
+                      : "text-foreground/70 hover:text-foreground hover:bg-foreground/5"
+                  }`}
+                >
+                  <Radio className="h-3.5 w-3.5" />
+                  <span>Live Caseload Stream</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    activeViewTab === "caseload" ? "bg-white/25 text-white" : "bg-forest/15 text-forest"
+                  }`}>
+                    {cases.length}
+                  </span>
+                </button>
+              </div>
+
               <Link
                 to="/counsellor"
                 className="inline-flex items-center gap-1.5 rounded-full border border-forest/30 bg-forest/10 px-3.5 py-1.5 text-xs font-medium text-forest hover:bg-forest hover:text-white transition-colors"
@@ -456,11 +527,183 @@ export default function AdminObservatoryPage() {
             </div>
           </div>
 
+          {activeViewTab === "victims" ? (
+            /* REGISTERED VICTIMS VIEW: Shows all information gathered, and "No info" for what wasn't gathered */
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-foreground/10 text-foreground/50 uppercase tracking-wider font-mono text-[10px]">
+                    <th className="pb-3 pr-3">Victim Identity</th>
+                    <th className="pb-3 px-3">Contact Email</th>
+                    <th className="pb-3 px-3">Phone Numbers</th>
+                    <th className="pb-3 px-3">Sign-Up Method</th>
+                    <th className="pb-3 px-3">Keypad / Codeword</th>
+                    <th className="pb-3 px-3">Sharing Consent</th>
+                    <th className="pb-3 px-3">Biometrics / Stress</th>
+                    <th className="pb-3 pl-3 text-right">Intake Date</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-foreground/5">
+                  {registeredVictims.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-8 text-center text-foreground/45 italic">
+                        No registered victims yet. Sign up as a victim from the navigation bar to record intake.
+                      </td>
+                    </tr>
+                  ) : (
+                    registeredVictims.map((v) => {
+                      const hasName = Boolean(v.name && v.name.trim() && v.name !== "Anonymous Traveler" && v.name !== "Cam-Verified Traveler");
+                      const hasEmail = Boolean(v.email && v.email.trim() && !v.email.includes("@sahayak.gov.in"));
+                      const hasPhone = Boolean(v.phone && v.phone.trim() && v.phone !== "+919876543210");
+                      const hasClosePhone = Boolean(v.close_phone && v.close_phone.trim());
+                      const hasKeypad = Boolean(v.keypad_code && v.keypad_code.trim());
+                      const hasCodeword = Boolean(v.codeword && v.codeword.trim());
+                      const hasVoiceScore = typeof v.voice_stress_score === "number";
+                      const hasCamScore = typeof v.camera_distress_score === "number" || Boolean(v.primary_emotion);
+
+                      return (
+                        <tr key={v.id || v.user_id} className="hover:bg-foreground/[0.02] transition-colors">
+                          <td className="py-3.5 pr-3">
+                            <div className="font-semibold text-foreground">
+                              {hasName ? v.name : <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>}
+                            </div>
+                            <span className="text-[10px] text-foreground/40 font-mono block">
+                              ID: {v.user_id || "No info"}
+                            </span>
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            {hasEmail ? (
+                              <span className="font-mono text-foreground/80">{v.email}</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            <div className="space-y-0.5 font-mono text-[11px]">
+                              <div>
+                                <span className="text-[10px] text-foreground/40 block">Primary:</span>
+                                {hasPhone ? (
+                                  <span className="text-forest font-medium">{v.phone}</span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-[10px] text-foreground/40 block">Close Contact:</span>
+                                {hasClosePhone ? (
+                                  <span className="text-clay font-medium">{v.close_phone}</span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            <span
+                              className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 ${
+                                v.auth_method === "opencv_camera"
+                                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
+                                  : v.auth_method === "voice_keypad"
+                                  ? "bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30"
+                                  : "bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/30"
+                              }`}
+                            >
+                              {v.auth_method === "opencv_camera" ? (
+                                <>
+                                  <Camera className="h-3 w-3" />
+                                  <span>OpenCV Face</span>
+                                </>
+                              ) : v.auth_method === "voice_keypad" ? (
+                                <>
+                                  <Phone className="h-3 w-3" />
+                                  <span>Voice Keypad</span>
+                                </>
+                              ) : (
+                                <>
+                                  <FileText className="h-3 w-3" />
+                                  <span>Traditional Web</span>
+                                </>
+                              )}
+                            </span>
+                          </td>
+
+                          <td className="py-3.5 px-3 font-mono">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px] text-foreground/40">Keypad:</span>
+                                {hasKeypad ? (
+                                  <span className="text-clay font-bold bg-clay/10 px-1.5 py-0.5 rounded border border-clay/20 text-[10px]">{v.keypad_code}</span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded bg-foreground/5 text-foreground/40 italic text-[10px]">No info</span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px] text-foreground/40">Codeword:</span>
+                                {hasCodeword ? (
+                                  <span className="text-foreground font-semibold">{v.codeword}</span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded bg-foreground/5 text-foreground/40 italic text-[10px]">No info</span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            <span
+                              className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${
+                                v.share_personal_info
+                                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+                                  : "bg-foreground/10 text-foreground/60 border border-foreground/15"
+                              }`}
+                            >
+                              {v.share_personal_info ? "Disclosed" : "Strict Shield"}
+                            </span>
+                          </td>
+
+                          <td className="py-3.5 px-3 font-mono text-[11px]">
+                            <div className="space-y-0.5">
+                              <div>
+                                <span className="text-[10px] text-foreground/40 block">Voice Stress:</span>
+                                {hasVoiceScore ? (
+                                  <span className="text-purple-700 dark:text-purple-300 font-bold">
+                                    {Math.round(v.voice_stress_score! * 100)}% ({v.voice_label || "Score"})
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded bg-foreground/5 text-foreground/40 italic text-[10px]">No info</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-[10px] text-foreground/40 block">Face Emotion:</span>
+                                {hasCamScore ? (
+                                  <span className="text-amber-600 font-bold capitalize">
+                                    {v.primary_emotion || "Detected"} ({Math.round((v.camera_distress_score || 0.35) * 100)}%)
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded bg-foreground/5 text-foreground/40 italic text-[10px]">No info</span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 pl-3 text-right font-mono text-[11px] text-foreground/60">
+                            {v.registered_at || <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-foreground/10 text-foreground/50 uppercase tracking-wider font-mono text-[10px]">
-                  <th className="pb-3 pr-4">Case Codeword</th>
+                  <th className="pb-3 pr-4">Case Codeword & Victim</th>
                   <th className="pb-3 px-4">Priority</th>
                   <th className="pb-3 px-4">Latest Victim Input</th>
                   <th className="pb-3 px-4">AI Score (MuRIL / Threat)</th>
@@ -476,11 +719,25 @@ export default function AdminObservatoryPage() {
 
                   return (
                     <tr key={c.id} className="hover:bg-foreground/[0.02] transition-colors">
-                      <td className="py-3.5 pr-4 font-mono font-bold text-foreground">
-                        <div className="flex items-center gap-1.5">
+                      <td className="py-3.5 pr-4 font-mono text-foreground">
+                        <div className="flex items-center gap-1.5 font-bold">
                           <span className="h-2 w-2 rounded-full bg-clay" />
                           <span>{c.codeword}</span>
                         </div>
+                        {c.victim_profile?.name ? (
+                          <div className="text-xs font-semibold text-forest dark:text-emerald-400 pl-3.5 pt-0.5 font-sans flex items-center gap-1">
+                            <span>{c.victim_profile.name}</span>
+                            {c.victim_profile.phone && (
+                              <span className="text-[10px] text-foreground/45 font-mono font-normal">
+                                ({c.victim_profile.phone})
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] text-foreground/40 italic pl-3.5 pt-0.5 font-sans">
+                            {c.share_personal_info ? "Anonymous Victim" : "Shielded Identity"}
+                          </div>
+                        )}
                         <span className="text-[10px] text-foreground/40 font-normal block pl-3.5">
                           {c.case_id} · {c.last_interaction}
                         </span>
@@ -619,6 +876,7 @@ export default function AdminObservatoryPage() {
               </tbody>
             </table>
           </div>
+          )}
         </div>
 
         {/* Bottom District Breakdown */}

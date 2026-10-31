@@ -46,8 +46,9 @@ class Settings(BaseSettings):
     # Groq API key fallback for local AI responses when VM is offline (set via env var GROQ_API_KEY)
     GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY", None)
 
-    # OpenRouter API key for LLM-based distress trigger extraction
+    # OpenRouter API key and model for LLM inference (Sahayak, CaseWriter, trigger extraction)
     OPENROUTER_API_KEY: str | None = os.getenv("OPENROUTER_API_KEY", None)
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
 
     # Azure VM Orchestrator & Microservice URLs
     ORCHESTRATOR_URL: str = os.getenv("ORCHESTRATOR_URL", "http://localhost:8500")

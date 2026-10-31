@@ -127,6 +127,7 @@ export interface CounsellorCase {
     confidence: number;
     trend_flag: "ESCALATING" | "STABLE";
   };
+  is_seed?: boolean; // marks demo/placeholder data — excluded from victim registry
 }
 
 export interface DecisionTrace {
@@ -286,6 +287,326 @@ export interface AuthUser {
   keypad_code?: string;
   codeword?: string;
   share_personal_info?: boolean;
+  auth_method?: "traditional" | "voice_keypad" | "opencv_camera";
+}
+
+export interface RegisteredVictimRecord {
+  id: string;
+  user_id: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  close_phone?: string;
+  keypad_code?: string;
+  codeword?: string;
+  auth_method: "traditional" | "voice_keypad" | "opencv_camera";
+  share_personal_info: boolean;
+  registered_at: string;
+  latest_modality?: "text used" | "voice used" | "camera used";
+  voice_stress_score?: number;
+  voice_label?: string;
+  camera_distress_score?: number;
+  primary_emotion?: string;
+  risk_level?: string;
+  case_id?: string;
+}
+
+export function getRegisteredVictims(): RegisteredVictimRecord[] {
+  if (typeof window === "undefined") return [];
+  const list: RegisteredVictimRecord[] = [];
+  const seenIds = new Set<string>();
+
+  // 1. Explicitly registered victims
+  try {
+    const raw = localStorage.getItem("sahayak_registered_victims");
+    if (raw) {
+      const parsed: RegisteredVictimRecord[] = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const v of parsed) {
+          if (v && v.id && !seenIds.has(v.id)) {
+            seenIds.add(v.id);
+            list.push(v);
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Also populate from active counsellor cases that contain victim profiles
+  try {
+    const rawCases = localStorage.getItem(STORAGE_KEYS.CASES);
+    if (rawCases) {
+      const cases: CounsellorCase[] = JSON.parse(rawCases);
+      if (Array.isArray(cases)) {
+        for (const c of cases) {
+          // Skip demo/seed data — only real victim signups appear in registry
+          if (c.is_seed) continue;
+          const vId = c.victim_profile?.email || c.codeword || c.id;
+          if (vId && !seenIds.has(vId) && c.victim_profile) {
+            seenIds.add(vId);
+            list.push({
+              id: vId,
+              user_id: c.id,
+              name: c.victim_profile.name,
+              email: c.victim_profile.email,
+              phone: c.victim_profile.phone,
+              close_phone: c.victim_profile.close_phone,
+              keypad_code: c.victim_profile.keypad_code,
+              codeword: c.codeword,
+              auth_method:
+                c.latest_modality === "camera used"
+                  ? "opencv_camera"
+                  : c.latest_modality === "voice used"
+                  ? "voice_keypad"
+                  : "traditional",
+              share_personal_info: !!c.share_personal_info,
+              registered_at: c.created_at || "Intake Record",
+              latest_modality: c.latest_modality || "text used",
+              voice_stress_score: c.ml_scores?.voice_stress_score,
+              voice_label: c.ml_scores?.voice_label,
+              camera_distress_score: c.interaction_history?.find((h) => h.camera_distress_score)?.camera_distress_score,
+              primary_emotion: c.interaction_history?.find((h) => h.primary_emotion)?.primary_emotion,
+              risk_level: c.triage_priority,
+              case_id: c.case_id || c.id,
+            });
+          }
+        }
+      }
+    }
+  } catch {}
+
+  return list;
+}
+
+export function saveRegisteredVictim(entry: Partial<RegisteredVictimRecord> & { user_id: string }): void {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem("sahayak_registered_victims");
+    let victims: RegisteredVictimRecord[] = [];
+    if (raw) {
+      try {
+        victims = JSON.parse(raw) || [];
+      } catch {
+        victims = [];
+      }
+    }
+
+    const existingIdx = victims.findIndex(
+      (v) =>
+        v.user_id === entry.user_id ||
+        (entry.email && v.email && v.email.toLowerCase() === entry.email.toLowerCase()) ||
+        (entry.codeword && v.codeword && v.codeword.toLowerCase() === entry.codeword.toLowerCase())
+    );
+
+    const fullRecord: RegisteredVictimRecord = {
+      id: entry.id || entry.user_id,
+      user_id: entry.user_id,
+      name: entry.name,
+      email: entry.email,
+      phone: entry.phone,
+      close_phone: entry.close_phone,
+      keypad_code: entry.keypad_code,
+      codeword: entry.codeword,
+      auth_method: entry.auth_method || "traditional",
+      share_personal_info: entry.share_personal_info ?? false,
+      registered_at:
+        entry.registered_at ||
+        new Date().toLocaleString("en-IN", {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      latest_modality: entry.latest_modality || "text used",
+      voice_stress_score: entry.voice_stress_score,
+      voice_label: entry.voice_label,
+      camera_distress_score: entry.camera_distress_score,
+      primary_emotion: entry.primary_emotion,
+      risk_level: entry.risk_level || "P3 - Routine",
+      case_id: entry.case_id,
+    };
+
+    if (existingIdx >= 0) {
+      victims[existingIdx] = { ...victims[existingIdx], ...fullRecord };
+    } else {
+      victims.unshift(fullRecord);
+    }
+    localStorage.setItem("sahayak_registered_victims", JSON.stringify(victims));
+    notifyStoreChange();
+  } catch (err) {
+    console.error("Failed to save registered victim", err);
+  }
+}
+
+/**
+ * Syncs backend victim records into localStorage so getCases() and
+ * getRegisteredVictims() include them on every heartbeat tick.
+ * Safe to call repeatedly — fully idempotent (deduplicates by id/email).
+ */
+export function syncBackendVictimsToLocalStorage(
+  backendVictims: Array<{
+    id: string;
+    user_id: string;
+    name?: string;
+    email?: string;
+    phone?: string;
+    vulnerability_category?: string;
+    preferred_language?: string;
+    registered_at?: string;
+    auth_method?: "traditional" | "voice_keypad" | "opencv_camera";
+    share_personal_info?: boolean;
+  }>
+): void {
+  if (typeof window === "undefined") return;
+
+  // --- 1. Merge into sahayak_registered_victims ---
+  try {
+    const raw = localStorage.getItem("sahayak_registered_victims");
+    let existing: RegisteredVictimRecord[] = [];
+    try { existing = raw ? JSON.parse(raw) : []; } catch { existing = []; }
+
+    const seenIds = new Set(existing.map((v) => v.user_id));
+    const seenEmails = new Set(
+      existing.filter((v) => v.email).map((v) => v.email!.toLowerCase())
+    );
+
+    let changed = false;
+    for (const bv of backendVictims) {
+      if (!bv.name || bv.name === "[Decryption Failed]") continue;
+      const emailKey = bv.email && bv.email !== "[Decryption Failed]"
+        ? bv.email.toLowerCase() : null;
+      if (seenIds.has(bv.user_id) || seenIds.has(bv.id) ||
+          (emailKey !== null && seenEmails.has(emailKey))) continue;
+
+      const cw_rec = bv.name.toLowerCase().replace(/\s+/g, "-").slice(0, 12) +
+        `-${bv.id.slice(0, 4)}`;
+      const bvId_rec = `backend-${bv.id}`;
+
+      const record: RegisteredVictimRecord = {
+        id: bv.id,
+        user_id: bv.user_id,
+        case_id: bvId_rec,
+        codeword: cw_rec,
+        name: bv.name,
+        email: emailKey ? bv.email : undefined,
+        phone: bv.phone && bv.phone !== "[Decryption Failed]" ? bv.phone : undefined,
+        auth_method: bv.auth_method || "traditional",
+        share_personal_info: bv.share_personal_info ?? true,
+        registered_at: bv.registered_at
+          ? new Date(bv.registered_at).toLocaleString("en-IN", {
+              month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+            })
+          : "Intake Record",
+        latest_modality: "text used",
+        risk_level: "P3 - Routine",
+      };
+      existing.unshift(record);
+      seenIds.add(bv.user_id);
+      if (emailKey) seenEmails.add(emailKey);
+      changed = true;
+    }
+    if (changed) {
+      localStorage.setItem("sahayak_registered_victims", JSON.stringify(existing));
+    }
+  } catch {}
+
+  // --- 2. Merge into sahayak_cases ---
+  try {
+    const rawCases = localStorage.getItem(STORAGE_KEYS.CASES);
+    let existingCases: CounsellorCase[] = [];
+    try { existingCases = rawCases ? JSON.parse(rawCases) : []; } catch { existingCases = []; }
+    if (!Array.isArray(existingCases)) existingCases = [];
+
+    const existingIds = new Set(existingCases.map((c) => c.id));
+    const existingEmails = new Set(
+      existingCases
+        .filter((c) => c.victim_profile?.email)
+        .map((c) => c.victim_profile!.email!.toLowerCase())
+    );
+    const existingCodewords = new Set(existingCases.map((c) => c.codeword));
+
+    const toAdd: CounsellorCase[] = [];
+    for (const bv of backendVictims) {
+      if (!bv.name || bv.name === "[Decryption Failed]") continue;
+      const bvId = `backend-${bv.id}`;
+      if (existingIds.has(bvId)) continue;
+
+      const emailKey = bv.email && bv.email !== "[Decryption Failed]"
+        ? bv.email.toLowerCase() : null;
+      if (emailKey && existingEmails.has(emailKey)) continue;
+
+      const cw = bv.name.toLowerCase().replace(/\s+/g, "-").slice(0, 12) +
+        `-${bv.id.slice(0, 4)}`;
+      if (existingCodewords.has(cw)) continue;
+      existingCodewords.add(cw);
+
+      const dateLabel = bv.registered_at
+        ? new Date(bv.registered_at).toLocaleDateString("en-IN", {
+            month: "short", day: "numeric",
+          })
+        : "Intake";
+
+      const synthCase: CounsellorCase = {
+        id: bvId,
+        case_id: `backend-${bv.id.slice(0, 8)}`,
+        codeword: cw,
+        triage_priority: "P3 - Routine",
+        status: "new",
+        share_personal_info: bv.share_personal_info ?? true,
+        victim_profile: {
+          ...(bv.name ? { name: bv.name } : {}),
+          ...(emailKey ? { email: bv.email! } : {}),
+          ...(bv.phone && bv.phone !== "[Decryption Failed]" ? { phone: bv.phone } : {}),
+        },
+        distress_trajectory: [{ date: "Intake", score: 0.3, event: "Backend signup" }],
+        fieldNotes: [
+          {
+            id: `fn-${bvId}`,
+            timestamp: dateLabel,
+            author: "Intake Desk",
+            text: `Intake case opened for ${bv.name}. Category: ${bv.vulnerability_category || "SC/ST PoA"}. Preferred language: ${bv.preferred_language || "hi"}.`,
+          },
+        ],
+        interaction_history: [
+          {
+            id: `ih-${bvId}`,
+            timestamp: dateLabel,
+            text: `Victim intake registered via backend portal (${bv.vulnerability_category || "SC/ST PoA"}).`,
+            source: "intake",
+            risk_level: "LOW",
+            modality: "text used",
+          },
+        ],
+        latest_modality: "text used",
+        signals: [
+          (bv.share_personal_info ?? true) ? "Personal Info Disclosed" : "Strict Anonymous Shield",
+          "PWA Secure",
+          "Backend Intake",
+        ],
+        summary: `Victim registered on ${dateLabel}.`,
+        last_interaction: dateLabel,
+        created_at: dateLabel,
+        ml_scores: {
+          sentiment_label: "LOW",
+          sentiment_score: 0.3,
+          threat_flag: false,
+          threat_prob: 0.1,
+          composite_score: 0.28,
+          confidence: 0.75,
+          trend_flag: "STABLE",
+        },
+      };
+      toAdd.push(synthCase);
+      existingIds.add(bvId);
+      if (emailKey) existingEmails.add(emailKey);
+    }
+
+    if (toAdd.length > 0) {
+      const merged = [...toAdd, ...existingCases];
+      localStorage.setItem(STORAGE_KEYS.CASES, JSON.stringify(merged));
+      notifyStoreChange();
+    }
+  } catch {}
 }
 
 export function getCurrentUser(): AuthUser | null {
@@ -315,6 +636,7 @@ export function syncVictimAccountAndCase(info: {
   sharePersonalInfo: boolean;
   referralId?: string;
   user_id: string;
+  auth_method?: "traditional" | "voice_keypad" | "opencv_camera";
 }): string {
   if (typeof window === "undefined") return "";
 
@@ -335,7 +657,8 @@ export function syncVictimAccountAndCase(info: {
     phone: info.sharePersonalInfo ? info.phone : undefined,
   });
 
-  // Save auth user object with codeword and explicit share preference
+  // Save auth user object with codeword, auth method and explicit share preference
+  const authMethod = info.auth_method || "traditional";
   const authUser: AuthUser = {
     user_id: info.user_id,
     email: info.email,
@@ -346,8 +669,22 @@ export function syncVictimAccountAndCase(info: {
     keypad_code: info.keypad_code,
     codeword: cw,
     share_personal_info: info.sharePersonalInfo,
+    auth_method: authMethod,
   };
   localStorage.setItem("sahayak_auth_user", JSON.stringify(authUser));
+
+  saveRegisteredVictim({
+    user_id: info.user_id,
+    name: info.name,
+    email: info.email,
+    phone: info.phone,
+    close_phone: info.close_phone,
+    keypad_code: info.keypad_code,
+    codeword: cw,
+    auth_method: authMethod,
+    share_personal_info: info.sharePersonalInfo,
+    latest_modality: authMethod === "opencv_camera" ? "camera used" : authMethod === "voice_keypad" ? "voice used" : "text used",
+  });
 
   // Auto-record Day 1 Intake Check-in (counts as first check-in, modality: text used)
   const todayStr = new Date().toISOString().split("T")[0];
@@ -411,7 +748,14 @@ export function syncVictimAccountAndCase(info: {
       share_personal_info: info.sharePersonalInfo,
       victim_profile: victimProfile,
       distress_trajectory: [{ date: "Intake", score: 0.35, event: "Sign-up (text used)" }],
-      fieldNotes: [],
+      fieldNotes: [
+        {
+          id: `fn_${Date.now()}`,
+          timestamp: "Just now",
+          author: "Intake Desk",
+          text: `Support dossier initiated for ${info.name}. Auth method: ${authMethod}. Personal info shared: ${info.sharePersonalInfo ? "Yes" : "Confidential shield"}.`,
+        },
+      ],
       interaction_history: [
         {
           id: `hist_${Date.now()}`,
@@ -629,7 +973,20 @@ export function signInWithKeypadCode(phone: string, keypadCode: string): AuthUse
           keypad_code: cleanCode,
           codeword: matched.codeword,
           share_personal_info: matched.share_personal_info,
+          auth_method: "voice_keypad",
         };
+        saveRegisteredVictim({
+          user_id: matched.id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          close_phone: user.close_phone,
+          keypad_code: cleanCode,
+          codeword: matched.codeword,
+          auth_method: "voice_keypad",
+          share_personal_info: !!matched.share_personal_info,
+          latest_modality: "voice used",
+        });
         localStorage.setItem("sahayak_access_token", `token_keypad_${Date.now()}`);
         localStorage.setItem("sahayak_auth_role", "victim");
         localStorage.setItem("sahayak_auth_user", JSON.stringify(user));
@@ -786,7 +1143,21 @@ export function signInWithCamera(params?: {
     codeword,
     phone: existing?.phone || "",
     keypad_code: existing?.keypad_code || "*7#",
+    auth_method: "opencv_camera",
   };
+  saveRegisteredVictim({
+    user_id: userId,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    keypad_code: user.keypad_code,
+    codeword,
+    auth_method: "opencv_camera",
+    share_personal_info: false,
+    latest_modality: "camera used",
+    camera_distress_score: params?.distressScore,
+    primary_emotion: params?.primaryEmotion,
+  });
 
   localStorage.setItem("sahayak_access_token", `token_cam_${Date.now()}`);
   localStorage.setItem("sahayak_auth_role", "victim");
@@ -1782,6 +2153,7 @@ function seedInitialCases(): CounsellorCase[] {
       id: "case-9412",
       case_id: "case-9412",
       codeword: "quiet-river-17",
+      is_seed: true,
       triage_priority: "P1 - Immediate",
       status: "in_support",
       share_personal_info: true,
@@ -1864,6 +2236,7 @@ function seedInitialCases(): CounsellorCase[] {
       id: "case-8820",
       case_id: "case-8820",
       codeword: "amber-meadow-42",
+      is_seed: true,
       triage_priority: "P2 - Within 2h",
       status: "contacted",
       distress_trajectory: [
@@ -1900,6 +2273,7 @@ function seedInitialCases(): CounsellorCase[] {
       id: "case-7731",
       case_id: "case-7731",
       codeword: "misty-cedar-88",
+      is_seed: true,
       triage_priority: "P3 - Routine",
       status: "resolved",
       distress_trajectory: [

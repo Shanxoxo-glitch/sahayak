@@ -1,4 +1,4 @@
-﻿"""
+"""
 app/api/v1/auth.py
 ──────────────────
 Authentication endpoints backed by our local Users table + JWT.
@@ -169,6 +169,60 @@ async def create_covert_session(response: Response, victim_id: str):
         max_age=60 * 60 * 24 * 7,
     )
     return {"status": "success", "session_created": True, "covert_mode": True}
+
+
+# ── List Victims (Admin / Counsellor view) ───────────────────────────────────
+@router.get("/victims")
+async def list_all_victims(db: AsyncSession = Depends(get_db)):
+    """
+    Returns all registered victim accounts with decrypted PII for admin/counsellor dashboards.
+    Uses raw SQL to be schema-agnostic (works with old and new DB schemas).
+    No auth gate — relies on internal network / front-end role check.
+    """
+    from sqlalchemy import text as sa_text
+    from app.services.encryption import decrypt_pii
+
+    # Determine available columns (schema-agnostic)
+    col_check = await db.execute(sa_text("PRAGMA table_info(victims)"))
+    col_names = [row[1] for row in col_check.fetchall()]
+    has_user_id = "user_id" in col_names
+
+    # Build column list dynamically
+    select_cols = "id, name_encrypted, contact_encrypted, email_encrypted, vulnerability_category, preferred_language, created_at"
+    if has_user_id:
+        select_cols = "id, user_id, " + select_cols.replace("id, ", "", 1)
+
+    result = await db.execute(sa_text(f"SELECT {select_cols} FROM victims ORDER BY created_at DESC"))
+    rows = result.fetchall()
+    col_keys = result.keys() if hasattr(result, "keys") else col_names
+
+    victims_out = []
+    for row in rows:
+        row_dict = dict(zip(result.keys(), row)) if hasattr(result, "keys") else {}
+        # Fallback mapping if keys() not available
+        if not row_dict:
+            keys = ["id", "user_id", "name_encrypted", "contact_encrypted", "email_encrypted", "vulnerability_category", "preferred_language", "created_at"] if has_user_id else ["id", "name_encrypted", "contact_encrypted", "email_encrypted", "vulnerability_category", "preferred_language", "created_at"]
+            row_dict = dict(zip(keys, row))
+
+        uid = row_dict.get("user_id") or row_dict.get("id")
+        name_raw = row_dict.get("name_encrypted")
+        email_raw = row_dict.get("email_encrypted")
+        phone_raw = row_dict.get("contact_encrypted")
+        created = row_dict.get("created_at")
+
+        victims_out.append({
+            "id": row_dict.get("id"),
+            "user_id": uid,
+            "name": decrypt_pii(name_raw) if name_raw else None,
+            "email": decrypt_pii(email_raw) if email_raw else None,
+            "phone": decrypt_pii(phone_raw) if phone_raw else None,
+            "vulnerability_category": row_dict.get("vulnerability_category"),
+            "preferred_language": row_dict.get("preferred_language"),
+            "registered_at": str(created) if created else None,
+            "auth_method": "traditional",
+            "share_personal_info": True,
+        })
+    return victims_out
 
 
 # ── Quick-Exit Purge ──────────────────────────────────────────────────────────

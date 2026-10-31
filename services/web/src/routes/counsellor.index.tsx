@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   getCases,
+  getRegisteredVictims,
+  RegisteredVictimRecord,
+  syncBackendVictimsToLocalStorage,
   updateCaseStatus,
   addCaseNote,
   subscribeToStore,
@@ -9,10 +12,12 @@ import {
   getCurrentUser,
   logoutUser,
 } from "@/lib/store";
+import { BASE } from "@/lib/api";
 import { TimelineOverlay } from "@/components/counsellor/TimelineOverlay";
 import { scoreTextLive, LiveScoreResult } from "@/lib/api";
 import {
   Folder,
+  User,
   FileText,
   Clock,
   HeartHandshake,
@@ -52,6 +57,8 @@ export default function CounsellorDashboardPage() {
   const [mounted, setMounted] = useState(false);
   const [currentUser, setCurrentUser] = useState(getCurrentUser());
   const [cases, setCases] = useState<CounsellorCase[]>([]);
+  const [registeredVictims, setRegisteredVictims] = useState<RegisteredVictimRecord[]>([]);
+  const [counsellorTab, setCounsellorTab] = useState<"dossiers" | "victims">("victims");
   const [selectedCase, setSelectedCase] = useState<CounsellorCase | null>(null);
   const [activeDossierIndex, setActiveDossierIndex] = useState(0);
   const [fullChatTurns, setFullChatTurns] = useState<{ role: string; content: string }[]>([]);
@@ -82,10 +89,27 @@ export default function CounsellorDashboardPage() {
     }
   };
 
+  // Fetch backend DB victims and persist to localStorage (survives heartbeat resets)
+  const fetchBackendVictims = async () => {
+    try {
+      const res = await fetch(`${BASE}/api/v1/auth/victims`);
+      if (res.ok) {
+        const backendVictims: RegisteredVictimRecord[] = await res.json();
+        // Write into localStorage so getCases() / getRegisteredVictims() pick them up
+        // on every heartbeat tick - avoids the 3s reset problem
+        syncBackendVictimsToLocalStorage(backendVictims);
+      }
+    } catch {
+      // Backend unavailable - localStorage-only mode
+    }
+  };
+
   useEffect(() => {
     setMounted(true);
     const refresh = () => {
       setCurrentUser(getCurrentUser());
+      const localVictims = getRegisteredVictims();
+      setRegisteredVictims(localVictims);
       const list = getCases();
       setCases(list);
       setSelectedCase((current) => {
@@ -107,8 +131,15 @@ export default function CounsellorDashboardPage() {
     };
 
     refresh();
+    fetchBackendVictims();
     const unsubscribe = subscribeToStore(refresh);
-    return () => unsubscribe();
+    const backendTimer = setInterval(() => {
+      fetchBackendVictims();
+    }, 15000);
+    return () => {
+      unsubscribe();
+      clearInterval(backendTimer);
+    };
   }, []);
 
   useEffect(() => {
@@ -296,7 +327,319 @@ export default function CounsellorDashboardPage() {
 
 
 
-        {/* Main Work Area: Horizontal Dossier Shelf + Active Selected Case Below */}
+        {/* Tab Switcher: Assigned Dossiers vs Victims Intake Directory */}
+        <div className="flex flex-wrap items-center justify-between gap-3 p-1.5 bg-card/80 border border-foreground/10 rounded-2xl shadow-sm backdrop-blur-md">
+          <div className="flex items-center gap-1.5 p-1 bg-background/80 rounded-xl border border-foreground/10">
+            <button
+              type="button"
+              onClick={() => setCounsellorTab("dossiers")}
+              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer ${
+                counsellorTab === "dossiers"
+                  ? "bg-forest text-white shadow-sm"
+                  : "text-foreground/70 hover:text-foreground hover:bg-foreground/5"
+              }`}
+            >
+              <Folder className="h-3.5 w-3.5" />
+              <span>Assigned Case Dossiers</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                counsellorTab === "dossiers" ? "bg-white/20 text-white" : "bg-forest/15 text-forest"
+              }`}>
+                {cases.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCounsellorTab("victims")}
+              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 cursor-pointer ${
+                counsellorTab === "victims"
+                  ? "bg-clay text-white shadow-sm"
+                  : "text-foreground/70 hover:text-foreground hover:bg-foreground/5"
+              }`}
+            >
+              <HeartHandshake className="h-3.5 w-3.5" />
+              <span>Victims Intake Directory</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                counsellorTab === "victims" ? "bg-white/20 text-white" : "bg-clay/15 text-clay"
+              }`}>
+                {registeredVictims.length}
+              </span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 px-3 text-xs text-foreground/55 font-mono">
+            <span>Live Sync Active</span>
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+          </div>
+        </div>
+
+        {counsellorTab === "victims" ? (
+          /* VICTIMS INTAKE DIRECTORY VIEW: Shows every single piece of gathered info, and "No info" for what wasn't gathered */
+          <div className="rounded-3xl border border-foreground/15 bg-card p-6 md:p-8 space-y-6 shadow-[var(--shadow-soft)]">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-foreground/10 pb-4">
+              <div>
+                <span className="text-[10px] font-medium uppercase tracking-widest text-clay flex items-center gap-1.5">
+                  <Radio className="h-3.5 w-3.5 text-clay animate-pulse" /> Comprehensive Victim Intake Registry
+                </span>
+                <h2 className="font-display text-2xl text-foreground">
+                  Victim Registration Profiles ({registeredVictims.length})
+                </h2>
+                <p className="text-xs text-foreground/60">
+                  Full intelligence record of all individuals signing up as victims. Ungathered fields are strictly marked "No info".
+                </p>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-foreground/10 text-foreground/50 uppercase tracking-wider font-mono text-[10px]">
+                    <th className="pb-3 pr-3">Name / Victim ID</th>
+                    <th className="pb-3 px-3">Email Address</th>
+                    <th className="pb-3 px-3">Contact Phones</th>
+                    <th className="pb-3 px-3">Sign-Up Method</th>
+                    <th className="pb-3 px-3">Keypad Code</th>
+                    <th className="pb-3 px-3">Codeword</th>
+                    <th className="pb-3 px-3">Sharing Consent</th>
+                    <th className="pb-3 px-3">Biometrics / Stress</th>
+                    <th className="pb-3 pl-3 text-right">Action / Dossier</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-foreground/5">
+                  {registeredVictims.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-8 text-center text-foreground/45 italic">
+                        No registered victims found in registry.
+                      </td>
+                    </tr>
+                  ) : (
+                    registeredVictims.map((v) => {
+                      const hasName = Boolean(v.name && v.name.trim() && v.name !== "Anonymous Traveler" && v.name !== "Cam-Verified Traveler");
+                      const hasEmail = Boolean(v.email && v.email.trim() && !v.email.includes("@sahayak.gov.in"));
+                      const hasPhone = Boolean(v.phone && v.phone.trim() && v.phone !== "+919876543210");
+                      const hasClosePhone = Boolean(v.close_phone && v.close_phone.trim());
+                      const hasKeypad = Boolean(v.keypad_code && v.keypad_code.trim());
+                      const hasCodeword = Boolean(v.codeword && v.codeword.trim());
+                      const hasVoiceScore = typeof v.voice_stress_score === "number";
+                      const hasCamScore = typeof v.camera_distress_score === "number" || Boolean(v.primary_emotion);
+
+                      return (
+                        <tr key={v.id || v.user_id} className="hover:bg-foreground/[0.02] transition-colors">
+                          <td className="py-3.5 pr-3">
+                            <div className="font-semibold text-foreground">
+                              {hasName ? v.name : <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>}
+                            </div>
+                            <span className="text-[10px] text-foreground/40 font-mono block">
+                              ID: {v.user_id || "No info"}
+                            </span>
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            {hasEmail ? (
+                              <span className="font-mono text-foreground/80">{v.email}</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            <div className="space-y-0.5 font-mono text-[11px]">
+                              <div>
+                                <span className="text-[10px] text-foreground/40 block">Primary:</span>
+                                {hasPhone ? (
+                                  <span className="text-forest font-medium">{v.phone}</span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-[10px] text-foreground/40 block">Close Contact:</span>
+                                {hasClosePhone ? (
+                                  <span className="text-clay font-medium">{v.close_phone}</span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic font-mono text-[10px]">No info</span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            <span
+                              className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1 ${
+                                v.auth_method === "opencv_camera"
+                                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
+                                  : v.auth_method === "voice_keypad"
+                                  ? "bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30"
+                                  : "bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/30"
+                              }`}
+                            >
+                              {v.auth_method === "opencv_camera" ? (
+                                <>
+                                  <Camera className="h-3 w-3" />
+                                  <span>OpenCV Face</span>
+                                </>
+                              ) : v.auth_method === "voice_keypad" ? (
+                                <>
+                                  <Phone className="h-3 w-3" />
+                                  <span>Voice Keypad</span>
+                                </>
+                              ) : (
+                                <>
+                                  <FileText className="h-3 w-3" />
+                                  <span>Traditional Web</span>
+                                </>
+                              )}
+                            </span>
+                          </td>
+
+                          <td className="py-3.5 px-3 font-mono">
+                            {hasKeypad ? (
+                              <span className="text-clay font-bold bg-clay/10 px-2 py-0.5 rounded border border-clay/20 text-[11px]">{v.keypad_code}</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic text-[10px]">No info</span>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 px-3 font-mono">
+                            {hasCodeword ? (
+                              <span className="text-foreground font-semibold">{v.codeword}</span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-foreground/5 text-foreground/40 italic text-[10px]">No info</span>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 px-3">
+                            <span
+                              className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ${
+                                v.share_personal_info
+                                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+                                  : "bg-foreground/10 text-foreground/60 border border-foreground/15"
+                              }`}
+                            >
+                              {v.share_personal_info ? "Disclosed" : "Strict Shield"}
+                            </span>
+                          </td>
+
+                          <td className="py-3.5 px-3 font-mono text-[11px]">
+                            <div className="space-y-0.5">
+                              <div>
+                                <span className="text-[10px] text-foreground/40 block">Voice Stress:</span>
+                                {hasVoiceScore ? (
+                                  <span className="text-purple-700 dark:text-purple-300 font-bold">
+                                    {Math.round(v.voice_stress_score! * 100)}% ({v.voice_label || "Score"})
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded bg-foreground/5 text-foreground/40 italic text-[10px]">No info</span>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-[10px] text-foreground/40 block">Face Emotion:</span>
+                                {hasCamScore ? (
+                                  <span className="text-amber-600 font-bold capitalize">
+                                    {v.primary_emotion || "Detected"} ({Math.round((v.camera_distress_score || 0.35) * 100)}%)
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.2 rounded bg-foreground/5 text-foreground/40 italic text-[10px]">No info</span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 pl-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const target = cases.find(
+                                  (c) =>
+                                    c.id === v.user_id ||
+                                    c.id === v.id ||
+                                    c.id === `backend-${v.id}` ||
+                                    c.id === `backend-${v.user_id}` ||
+                                    c.case_id === v.case_id ||
+                                    (v.codeword && c.codeword === v.codeword) ||
+                                    (v.email && c.victim_profile?.email?.toLowerCase() === v.email.toLowerCase()) ||
+                                    (v.name && c.victim_profile?.name?.toLowerCase() === v.name.toLowerCase())
+                                );
+                                if (target) {
+                                  setSelectedCase(target);
+                                  const targetIdx = cases.findIndex((c) => c.id === target.id);
+                                  if (targetIdx >= 0) setActiveDossierIndex(targetIdx);
+                                  setCounsellorTab("dossiers");
+                                } else {
+                                  const newCw = v.codeword || (v.name ? v.name.toLowerCase().replace(/\s+/g, "-").slice(0, 12) + `-${v.id.slice(0, 4)}` : `intake-${v.id.slice(0, 8)}`);
+                                  const newDossier: CounsellorCase = {
+                                    id: `backend-${v.id}`,
+                                    case_id: `backend-${v.id.slice(0, 8)}`,
+                                    codeword: newCw,
+                                    triage_priority: "P3 - Routine",
+                                    status: "new",
+                                    share_personal_info: v.share_personal_info ?? true,
+                                    victim_profile: {
+                                      name: v.name,
+                                      email: v.email,
+                                      phone: v.phone,
+                                      close_phone: v.close_phone,
+                                      keypad_code: v.keypad_code,
+                                    },
+                                    distress_trajectory: [{ date: "Intake", score: 0.3, event: "Intake registered" }],
+                                    fieldNotes: [
+                                      {
+                                        id: `fn-${v.id}`,
+                                        timestamp: v.registered_at || "Recent",
+                                        author: "Intake Desk",
+                                        text: `Dossier opened for ${v.name || "Victim"} via ${v.auth_method || "portal"}.`,
+                                      },
+                                    ],
+                                    interaction_history: [
+                                      {
+                                        id: `ih-${v.id}`,
+                                        timestamp: v.registered_at || "Recent",
+                                        text: `Intake established via ${v.auth_method || "portal"}.`,
+                                        source: "intake",
+                                        risk_level: "LOW",
+                                        modality: v.latest_modality || "text used",
+                                      },
+                                    ],
+                                    latest_modality: v.latest_modality || "text used",
+                                    signals: [
+                                      v.share_personal_info ? "Personal Info Disclosed" : "Strict Anonymous Shield",
+                                      "PWA Secure",
+                                    ],
+                                    summary: `Victim ${v.name || "profile"} intake record.`,
+                                    last_interaction: v.registered_at || "Recent",
+                                    created_at: v.registered_at || "Recent",
+                                    ml_scores: {
+                                      sentiment_label: "LOW",
+                                      sentiment_score: 0.3,
+                                      threat_flag: false,
+                                      threat_prob: 0.1,
+                                      composite_score: 0.28,
+                                      confidence: 0.8,
+                                      trend_flag: "STABLE",
+                                    },
+                                  };
+                                  setCases((prev) => [newDossier, ...prev]);
+                                  setSelectedCase(newDossier);
+                                  setActiveDossierIndex(0);
+                                  setCounsellorTab("dossiers");
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 rounded-full bg-forest px-3 py-1 text-[11px] font-semibold text-white hover:bg-clay transition-all cursor-pointer shadow-sm"
+                            >
+                              <span>Open Dossier</span>
+                              <ArrowRight className="h-3 w-3" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+        /* Main Work Area: Horizontal Dossier Shelf + Active Selected Case Below */
         <div className="space-y-6">
           {/* Top Section: Horizontal Assigned Dossiers Shelf */}
           <div className="space-y-3">
@@ -377,6 +720,25 @@ export default function CounsellorDashboardPage() {
                       </span>
                     </div>
 
+                    {/* Prominent Victim Name in Dossier Card */}
+                    <div className="text-xs font-semibold text-foreground/90 mb-1.5 truncate flex items-center gap-1">
+                      {c.victim_profile?.name ? (
+                        <span className="text-forest dark:text-emerald-400 font-bold flex items-center gap-1 truncate">
+                          <User className="h-3 w-3 shrink-0 text-forest" />
+                          <span>{c.victim_profile.name}</span>
+                          {c.victim_profile.phone && (
+                            <span className="text-[10px] text-foreground/45 font-mono font-normal">
+                              ({c.victim_profile.phone})
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-foreground/45 italic text-[11px]">
+                          {c.share_personal_info ? "Anonymous Victim" : "Shielded Identity"}
+                        </span>
+                      )}
+                    </div>
+
                     {/* Modality Tag & Keypad Sequence */}
                     <div className="flex items-center gap-1.5 mb-2">
                       <span
@@ -450,9 +812,16 @@ export default function CounsellorDashboardPage() {
                       Active Victim Dossier
                     </span>
                     <div className="flex items-center gap-3">
-                      <h2 className="font-mono text-3xl font-bold text-foreground">
-                        {selectedCase.codeword}
-                      </h2>
+                      <div className="flex items-baseline gap-2.5 flex-wrap">
+                        <h2 className="font-mono text-3xl font-bold text-foreground">
+                          {selectedCase.codeword}
+                        </h2>
+                        {selectedCase.victim_profile?.name && (
+                          <span className="text-xl font-display font-bold text-forest dark:text-emerald-400">
+                            — {selectedCase.victim_profile.name}
+                          </span>
+                        )}
+                      </div>
                       {selectedCase.share_personal_info ? (
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 px-3 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
                           <CheckCircle2 className="h-3 w-3" />
@@ -1266,6 +1635,7 @@ export default function CounsellorDashboardPage() {
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

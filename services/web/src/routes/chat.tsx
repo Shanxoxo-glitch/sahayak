@@ -56,6 +56,16 @@ const CASEWRITER_WELCOME: Message = {
 export default function CrisisChatPage() {
   const navigate = useNavigate();
   const currentUser = getCurrentUser();
+  // Ephemeral modes (keypad check-in and OpenCV camera check-in) maintain NO chat history
+  const isEphemeralUser = currentUser?.auth_method === "voice_keypad" || currentUser?.auth_method === "opencv_camera";
+  
+  // Scoped strictly per-user ID for normally signed-in accounts so chat of one user never leaks to another
+  const userChatScope = currentUser?.user_id
+    ? `usr_${currentUser.user_id}`
+    : currentUser?.email
+    ? `email_${currentUser.email.replace(/[^a-zA-Z0-9]/g, "_")}`
+    : "anon_guest";
+
   const activeCodeword = currentUser?.codeword || getActiveCodeword() || "quiet-sanctuary";
 
   // Dual mode: "sahayak" (empathetic victim sanctuary) vs "casewriter" (clinical & legal case synthesizer)
@@ -67,11 +77,11 @@ export default function CrisisChatPage() {
     return "sahayak";
   });
 
-  // Independent chat message logs
+  // Independent chat message logs with strict per-user isolation & ephemeral check
   const [sahayakMessages, setSahayakMessages] = useState<Message[]>(() => {
-    if (typeof window === "undefined") return [DEFAULT_WELCOME];
+    if (typeof window === "undefined" || isEphemeralUser) return [DEFAULT_WELCOME];
     try {
-      const stored = localStorage.getItem(`sahayak_chat_messages_${activeCodeword}`);
+      const stored = localStorage.getItem(`sahayak_chat_messages_${userChatScope}`);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -81,9 +91,9 @@ export default function CrisisChatPage() {
   });
 
   const [casewriterMessages, setCasewriterMessages] = useState<Message[]>(() => {
-    if (typeof window === "undefined") return [CASEWRITER_WELCOME];
+    if (typeof window === "undefined" || isEphemeralUser) return [CASEWRITER_WELCOME];
     try {
-      const stored = localStorage.getItem(`casewriter_chat_messages_${activeCodeword}`);
+      const stored = localStorage.getItem(`casewriter_chat_messages_${userChatScope}`);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -106,20 +116,20 @@ export default function CrisisChatPage() {
   const messages = chatMode === "sahayak" ? sahayakMessages : casewriterMessages;
   const setMessages = chatMode === "sahayak" ? setSahayakMessages : setCasewriterMessages;
 
-  // Persist messages per mode
+  // Persist messages per mode (Strictly isolated by user, never persisted for ephemeral check-ins)
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || isEphemeralUser) return;
     try {
-      localStorage.setItem(`sahayak_chat_messages_${activeCodeword}`, JSON.stringify(sahayakMessages));
+      localStorage.setItem(`sahayak_chat_messages_${userChatScope}`, JSON.stringify(sahayakMessages));
     } catch {}
-  }, [sahayakMessages, activeCodeword]);
+  }, [sahayakMessages, userChatScope, isEphemeralUser]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || isEphemeralUser) return;
     try {
-      localStorage.setItem(`casewriter_chat_messages_${activeCodeword}`, JSON.stringify(casewriterMessages));
+      localStorage.setItem(`casewriter_chat_messages_${userChatScope}`, JSON.stringify(casewriterMessages));
     } catch {}
-  }, [casewriterMessages, activeCodeword]);
+  }, [casewriterMessages, userChatScope, isEphemeralUser]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -382,10 +392,11 @@ export default function CrisisChatPage() {
           {chatMode === "sahayak" && (
             <button
               onClick={() => setShowGroundingDrawer(!showGroundingDrawer)}
-              className="flex items-center gap-1.5 rounded-full border border-foreground/15 bg-card/70 px-3 py-1 text-xs font-medium text-foreground hover:border-clay hover:text-clay transition-colors"
+              className="flex items-center gap-1.5 rounded-full border border-red-500/35 bg-red-500/10 px-3 py-1 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-500 hover:text-white transition-all shadow-sm"
+              title="Feeling panicky? Open immediate calming exercise"
             >
-              <Wind className="h-3.5 w-3.5 text-clay" />
-              <span>Grounding Anchor</span>
+              <Wind className="h-3.5 w-3.5 animate-pulse" />
+              <span>Feeling panicky</span>
               {showGroundingDrawer ? (
                 <ChevronUp className="h-3.5 w-3.5" />
               ) : (
@@ -400,8 +411,8 @@ export default function CrisisChatPage() {
                 type="button"
                 onClick={() => {
                   setCasewriterMessages([CASEWRITER_WELCOME]);
-                  if (typeof window !== "undefined") {
-                    localStorage.removeItem(`casewriter_chat_messages_${activeCodeword}`);
+                  if (typeof window !== "undefined" && !isEphemeralUser) {
+                    localStorage.removeItem(`casewriter_chat_messages_${userChatScope}`);
                   }
                 }}
                 className="inline-flex items-center gap-1 rounded-full border border-foreground/15 bg-card/70 px-2.5 py-1 text-xs font-medium text-foreground/70 hover:border-clay hover:text-clay transition-colors cursor-pointer"
@@ -496,7 +507,7 @@ export default function CrisisChatPage() {
           <div className="rounded-2xl border border-clay/30 bg-card/95 p-4 shadow-[var(--shadow-lift)] backdrop-blur-md space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-clay flex items-center gap-1.5">
-                <Compass className="h-3.5 w-3.5" /> {groundingExercises[0].title}
+                <Compass className="h-3.5 w-3.5" /> Feeling Panicky? {groundingExercises[0].title}
               </span>
               <span className="text-[11px] text-foreground/50">
                 Step {groundingStep + 1} of {groundingExercises[0].steps.length}

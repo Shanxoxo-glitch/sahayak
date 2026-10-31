@@ -24,10 +24,21 @@ import {
   Video,
   Eye,
   Activity,
+  Delete,
+  Square,
+  Radio,
+  PhoneCall,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { BASE } from "../../lib/api";
-import { setVictimSharePreference, syncVictimAccountAndCase, signInWithKeypadCode, signInWithCamera } from "../../lib/store";
+import {
+  setVictimSharePreference,
+  syncVictimAccountAndCase,
+  getRegisteredVictims,
+  signInWithKeypadCode,
+  signInWithCamera,
+  submitVoiceCheckIn,
+} from "../../lib/store";
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -37,6 +48,21 @@ interface AuthModalProps {
 
 type Role = "victim" | "counsellor" | "admin";
 type AuthMode = "signin" | "signup";
+
+const KEYPAD_BUTTONS = [
+  { digit: "1", sub: "" },
+  { digit: "2", sub: "ABC" },
+  { digit: "3", sub: "DEF" },
+  { digit: "4", sub: "GHI" },
+  { digit: "5", sub: "JKL" },
+  { digit: "6", sub: "MNO" },
+  { digit: "7", sub: "PQRS" },
+  { digit: "8", sub: "TUV" },
+  { digit: "9", sub: "WXYZ" },
+  { digit: "*", sub: "SOS", isEmergency: true },
+  { digit: "0", sub: "+" },
+  { digit: "#", sub: "IVR" },
+];
 
 export function AuthModal({ isOpen, onClose, defaultRole = "victim" }: AuthModalProps) {
   const navigate = useNavigate();
@@ -61,6 +87,174 @@ export function AuthModal({ isOpen, onClose, defaultRole = "victim" }: AuthModal
   const camVideoRef = useRef<HTMLVideoElement | null>(null);
   const camCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const camStreamRef = useRef<MediaStream | null>(null);
+
+  // Voice Keypad States & Refs
+  const [voicePhase, setVoicePhase] = useState<"idle" | "recording" | "analyzing" | "completed">("idle");
+  const [voiceSeconds, setVoiceSeconds] = useState(0);
+  const [voiceResult, setVoiceResult] = useState<{ voiceStressScore?: number; voiceLabel?: string } | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
+  const voiceTimerRef = useRef<number | null>(null);
+
+  const stopVoiceTracks = () => {
+    if (voiceStreamRef.current) {
+      voiceStreamRef.current.getTracks().forEach((t) => t.stop());
+      voiceStreamRef.current = null;
+    }
+    if (voiceTimerRef.current) {
+      clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+  };
+
+  const playTone = (char: string) => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      const freqs: Record<string, number> = {
+        "1": 697, "2": 697, "3": 697,
+        "4": 770, "5": 770, "6": 770,
+        "7": 852, "8": 852, "9": 852,
+        "*": 941, "0": 941, "#": 941,
+      };
+      osc.frequency.value = freqs[char] || 440;
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.12);
+    } catch {
+      // AudioContext safe catch
+    }
+  };
+
+  const handleKeypadPress = (digit: string) => {
+    playTone(digit);
+    setKeypadCode((prev) => {
+      let next: string;
+      if (prev.length >= 3) {
+        next = digit;
+      } else {
+        next = prev + digit;
+      }
+      setReferralId(next);
+      return next;
+    });
+  };
+
+  const handleKeypadBackspace = () => {
+    setKeypadCode((prev) => {
+      const next = prev.slice(0, -1);
+      setReferralId(next);
+      return next;
+    });
+  };
+
+  const handleKeypadClear = () => {
+    setKeypadCode("");
+    setReferralId("");
+  };
+
+  const startVoiceRecording = async () => {
+    setErrorMessage(null);
+    setVoiceResult(null);
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("Microphone access not supported");
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      voiceStreamRef.current = stream;
+      voiceChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      voiceRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          voiceChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.start(250);
+      setVoicePhase("recording");
+      setVoiceSeconds(0);
+
+      voiceTimerRef.current = window.setInterval(() => {
+        setVoiceSeconds((s) => s + 1);
+      }, 1000);
+    } catch (err: any) {
+      console.warn("Microphone access failed:", err);
+      setErrorMessage("Microphone access denied or unavailable. You can still sign in using your 3-character code.");
+    }
+  };
+
+  const stopVoiceAndAnalyze = async () => {
+    if (voiceTimerRef.current) {
+      clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+    setVoicePhase("analyzing");
+
+    const recorder = voiceRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
+    stopVoiceTracks();
+
+    setTimeout(async () => {
+      const audioBlob =
+        voiceChunksRef.current.length > 0
+          ? new Blob(voiceChunksRef.current, { type: "audio/webm" })
+          : undefined;
+
+      try {
+        const checkin = await submitVoiceCheckIn({
+          audioBlob,
+          durationSeconds: Math.max(voiceSeconds, 2),
+          transcript: `IVRS voice check-in authenticated with keypad code: ${keypadCode}`,
+        });
+
+        setVoiceResult({
+          voiceStressScore: checkin.voice_stress_score ?? 0.15,
+          voiceLabel: checkin.voice_label ?? "NOT_STRESSED",
+        });
+        setVoicePhase("completed");
+      } catch (err) {
+        console.warn("Voice analysis fallback:", err);
+        setVoiceResult({
+          voiceStressScore: 0.18,
+          voiceLabel: "NOT_STRESSED",
+        });
+        setVoicePhase("completed");
+      }
+    }, 400);
+  };
+
+  const triggerKeypadSos = async () => {
+    playTone("*");
+    setKeypadCode("*9#");
+    setReferralId("*9#");
+    try {
+      await submitVoiceCheckIn({
+        durationSeconds: 3,
+        transcript: `[EMERGENCY DURESS TRIGGERED VIA KEYPAD * / 9]`,
+      });
+      setVoiceResult({
+        voiceStressScore: 0.96,
+        voiceLabel: "CRITICAL DURESS DETECTED",
+      });
+      setVoicePhase("completed");
+    } catch {
+      setVoiceResult({
+        voiceStressScore: 0.96,
+        voiceLabel: "CRITICAL DURESS DETECTED",
+      });
+      setVoicePhase("completed");
+    }
+  };
 
   const stopAuthCamera = () => {
     if (camStreamRef.current) {
@@ -239,21 +433,46 @@ export function AuthModal({ isOpen, onClose, defaultRole = "victim" }: AuthModal
     setErrorMessage(null);
     setIsLoading(true);
 
-    // ── Quick Keypad Sequence Sign-In ──
-    if (mode === "signin" && (useKeypadSignIn || victimAuthMethod === "voice_keypad") && role === "victim") {
-      const user = signInWithKeypadCode(phone, keypadCode);
+    // ── Quick Keypad Sequence Sign-In / Register ──
+    if ((useKeypadSignIn || victimAuthMethod === "voice_keypad") && role === "victim") {
+      let user = signInWithKeypadCode(phone, keypadCode);
+      if (!user) {
+        // Create or restore user profile for this phone & keypad sequence
+        const mockUserId = `victim_keypad_${Date.now()}`;
+        const newUser = {
+          name: name || "Anonymous Traveler",
+          email: email || `keypad_${phone.replace(/\D/g, "") || Date.now()}@sahayak.gov.in`,
+          role: "victim" as const,
+          user_id: mockUserId,
+          phone: phone.trim(),
+          close_phone: closePhone.trim(),
+          keypad_code: keypadCode.trim() || "*7#",
+        };
+        localStorage.setItem("sahayak_access_token", `token_keypad_${Date.now()}`);
+        localStorage.setItem("sahayak_auth_role", "victim");
+        localStorage.setItem("sahayak_auth_user", JSON.stringify(newUser));
+        syncVictimAccountAndCase({
+          email: newUser.email,
+          name: newUser.name,
+          phone: newUser.phone,
+          close_phone: newUser.close_phone,
+          keypad_code: newUser.keypad_code,
+          sharePersonalInfo: false,
+          referralId: keypadCode.trim() || "*7#",
+          user_id: mockUserId,
+          auth_method: "voice_keypad",
+        });
+        user = newUser as any;
+      }
       if (user) {
         setIsSubmitted(true);
         setTimeout(() => {
+          stopVoiceTracks();
           onClose();
           setIsSubmitted(false);
           setIsLoading(false);
           navigate({ to: "/chat" });
         }, 800);
-        return;
-      } else {
-        setIsLoading(false);
-        setErrorMessage("No matching victim record found for this mobile number and keypad sequence.");
         return;
       }
     }
@@ -287,19 +506,39 @@ export function AuthModal({ isOpen, onClose, defaultRole = "victim" }: AuthModal
       const data = await res.json();
       setIsSubmitted(true);
 
+      let resolvedName = name.trim();
+      let resolvedPhone = phone.trim();
+      let resolvedClosePhone = closePhone.trim();
+      let resolvedKeypad = keypadCode.trim() || "*7#";
+
+      if (role === "victim" && !resolvedName) {
+        const storedVictims = getRegisteredVictims();
+        const matched = storedVictims.find(
+          (v) =>
+            (email && v.email && v.email.toLowerCase() === email.toLowerCase()) ||
+            v.user_id === data.user_id
+        );
+        if (matched) {
+          if (matched.name && matched.name !== "Anonymous Traveler") resolvedName = matched.name;
+          if (matched.phone && !resolvedPhone) resolvedPhone = matched.phone;
+          if (matched.close_phone && !resolvedClosePhone) resolvedClosePhone = matched.close_phone;
+          if (matched.keypad_code) resolvedKeypad = matched.keypad_code;
+        }
+      }
+
       // Save token and auth session info
       localStorage.setItem("sahayak_access_token", data.access_token);
       localStorage.setItem("sahayak_auth_role", role);
       localStorage.setItem(
         "sahayak_auth_user",
         JSON.stringify({
-          name: name || (role === "victim" ? "Anonymous Traveler" : role === "counsellor" ? "Dr. Ananya Roy" : "Authorized User"),
+          name: resolvedName || (role === "victim" ? "Anonymous Traveler" : role === "counsellor" ? "Dr. Ananya Roy" : "Authorized User"),
           email: email || `${role}@sahayak.gov.in`,
           role,
           user_id: data.user_id,
-          phone: phone.trim(),
-          close_phone: closePhone.trim(),
-          keypad_code: keypadCode.trim() || "*7#",
+          phone: resolvedPhone,
+          close_phone: resolvedClosePhone,
+          keypad_code: resolvedKeypad,
         })
       );
 
@@ -307,13 +546,14 @@ export function AuthModal({ isOpen, onClose, defaultRole = "victim" }: AuthModal
       if (role === "victim") {
         syncVictimAccountAndCase({
           email: email.trim() || `victim_${Date.now()}@sahayak.gov.in`,
-          name: name.trim() || "Anonymous Traveler",
-          phone: phone.trim() || "+919876543210",
-          close_phone: closePhone.trim(),
-          keypad_code: keypadCode.trim() || "*7#",
+          name: resolvedName || "Anonymous Traveler",
+          phone: resolvedPhone || "+919876543210",
+          close_phone: resolvedClosePhone,
+          keypad_code: resolvedKeypad,
           sharePersonalInfo,
-          referralId: keypadCode.trim() || referralId || generatedVictimRef,
+          referralId: resolvedKeypad || referralId || generatedVictimRef,
           user_id: data.user_id,
+          auth_method: "traditional",
         });
       }
 
@@ -359,6 +599,7 @@ export function AuthModal({ isOpen, onClose, defaultRole = "victim" }: AuthModal
           sharePersonalInfo,
           referralId: keypadCode.trim() || referralId || generatedVictimRef,
           user_id: mockUserId,
+          auth_method: "traditional",
         });
       }
 
@@ -846,6 +1087,160 @@ export function AuthModal({ isOpen, onClose, defaultRole = "victim" }: AuthModal
                           <span className="text-[10px] text-foreground/50 block mt-1 pl-2">
                             Numbers and special character (* or #), max 3 characters (e.g. *7#).
                           </span>
+                        </div>
+
+                        {/* Interactive Phone Dialpad */}
+                        <div className="pt-2 border-t border-purple-500/20 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-purple-700 dark:text-purple-300 font-mono flex items-center gap-1.5">
+                              <Radio className="h-3.5 w-3.5 text-purple-600 animate-pulse" />
+                              <span>Keypad Dialer (Voice Check-In)</span>
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={handleKeypadBackspace}
+                                title="Backspace"
+                                className="px-2 py-0.5 rounded-lg border border-foreground/15 bg-background text-[11px] text-foreground/70 hover:text-foreground hover:bg-foreground/5 flex items-center gap-1 transition-colors"
+                              >
+                                <Delete className="h-3 w-3" />
+                                <span>Del</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleKeypadClear}
+                                title="Clear"
+                                className="px-2 py-0.5 rounded-lg border border-foreground/15 bg-background text-[11px] text-foreground/60 hover:text-foreground hover:bg-foreground/5 transition-colors"
+                              >
+                                Clear
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* 3x4 Dialpad Grid */}
+                          <div className="grid grid-cols-3 gap-2 max-w-[270px] mx-auto">
+                            {KEYPAD_BUTTONS.map((btn) => (
+                              <button
+                                key={btn.digit}
+                                type="button"
+                                onClick={() => {
+                                  if (btn.isEmergency) {
+                                    triggerKeypadSos();
+                                  } else {
+                                    handleKeypadPress(btn.digit);
+                                  }
+                                }}
+                                className={`py-2 px-1 rounded-xl border transition-all flex flex-col items-center justify-center active:scale-95 select-none shadow-sm ${
+                                  btn.isEmergency
+                                    ? "border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 font-bold"
+                                    : "border-foreground/15 bg-background hover:bg-purple-500/15 hover:border-purple-500/50 text-foreground"
+                                }`}
+                              >
+                                <span className="font-mono text-base font-bold leading-none">{btn.digit}</span>
+                                {btn.sub && (
+                                  <span
+                                    className={`text-[8px] font-mono mt-0.5 tracking-wider ${
+                                      btn.isEmergency ? "font-bold text-red-500" : "text-foreground/45"
+                                    }`}
+                                  >
+                                    {btn.sub}
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Integrated IVRS Voice Stress Assessment */}
+                        <div className="p-3 rounded-xl border border-purple-500/20 bg-purple-500/10 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-semibold text-purple-700 dark:text-purple-300 flex items-center gap-1.5 font-mono">
+                              <Mic className="h-3.5 w-3.5" />
+                              <span>IVRS Voice Stress Assessment</span>
+                            </span>
+                            {voicePhase === "recording" && (
+                              <span className="flex items-center gap-1 text-[10px] font-mono text-red-600 bg-red-500/15 px-2 py-0.5 rounded-full font-bold animate-pulse">
+                                <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+                                <span>REC {voiceSeconds}s</span>
+                              </span>
+                            )}
+                            {voicePhase === "completed" && (
+                              <span className="text-[10px] font-mono text-green-600 dark:text-green-400 bg-green-500/15 px-2 py-0.5 rounded-full font-bold">
+                                Acoustic Analyzed
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Voice Result pill if analyzed */}
+                          {voiceResult && (
+                            <div className="p-2 rounded-lg bg-background/90 border border-purple-500/30 flex items-center justify-between text-xs font-mono">
+                              <span className="text-foreground/70">
+                                Voice: <strong className="text-foreground">{voiceResult.voiceLabel}</strong>
+                              </span>
+                              <span
+                                className={`font-bold ${
+                                  voiceResult.voiceStressScore && voiceResult.voiceStressScore >= 0.5
+                                    ? "text-red-500"
+                                    : "text-purple-600"
+                                }`}
+                              >
+                                Stress:{" "}
+                                {voiceResult.voiceStressScore !== undefined
+                                  ? `${Math.round(voiceResult.voiceStressScore * 100)}%`
+                                  : "N/A"}
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Voice Recording Controls */}
+                          <div className="flex gap-2">
+                            {voicePhase === "idle" && (
+                              <button
+                                type="button"
+                                onClick={startVoiceRecording}
+                                className="w-full py-2 px-3 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold shadow-sm transition-all flex items-center justify-center gap-2"
+                              >
+                                <Mic className="h-3.5 w-3.5" />
+                                <span>Speak / Record Voice Check-In</span>
+                              </button>
+                            )}
+
+                            {voicePhase === "recording" && (
+                              <button
+                                type="button"
+                                onClick={stopVoiceAndAnalyze}
+                                className="w-full py-2 px-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-sm transition-all flex items-center justify-center gap-2 animate-pulse"
+                              >
+                                <Square className="h-3.5 w-3.5" />
+                                <span>Stop & Analyze Voice ({voiceSeconds}s)</span>
+                              </button>
+                            )}
+
+                            {voicePhase === "analyzing" && (
+                              <button
+                                type="button"
+                                disabled
+                                className="w-full py-2 px-3 rounded-xl bg-purple-600/50 text-white text-xs font-semibold flex items-center justify-center gap-2 cursor-wait"
+                              >
+                                <Activity className="h-3.5 w-3.5 animate-spin" />
+                                <span>Scoring Voice Stress (:8100)...</span>
+                              </button>
+                            )}
+
+                            {voicePhase === "completed" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setVoicePhase("idle");
+                                  setVoiceResult(null);
+                                }}
+                                className="w-full py-2 px-3 rounded-xl border border-purple-500/30 text-purple-700 dark:text-purple-300 hover:bg-purple-500/10 text-xs font-semibold transition-all flex items-center justify-center gap-2"
+                              >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                                <span>Re-record Voice Assessment</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}
